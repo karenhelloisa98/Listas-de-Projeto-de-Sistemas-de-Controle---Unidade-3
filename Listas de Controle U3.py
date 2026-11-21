@@ -1,6 +1,7 @@
 from contextlib import redirect_stdout
 import io
 import os
+import re
 from fpdf import FPDF
 import numpy as np
 import sympy as sp
@@ -10,21 +11,65 @@ def to_caret(expr):
     return str(expr).replace("**", "^")
 
 
+def format_number_clean(val, tol=1e-9):
+    c = complex(val)
+    re_val = 0.0 if abs(c.real) < tol else round(float(c.real), 6)
+    im_val = 0.0 if abs(c.imag) < tol else round(float(c.imag), 6)
+    if im_val == 0.0:
+        return f"{re_val}"
+    sinal = "+" if im_val > 0 else "-"
+    return f"({re_val} {sinal} {abs(im_val)}j)"
+
+
 def format_poles(poles, tol=1e-7):
-    formatted = []
-    for p in poles:
-        re = 0.0 if abs(p.real) < tol else round(float(p.real), 6)
-        im = 0.0 if abs(p.imag) < tol else round(float(p.imag), 6)
-        if im == 0.0:
-            formatted.append(f"{re}")
+    return [format_number_clean(p, tol=tol) for p in poles]
+
+
+def format_poly_decimal_str(coeffs_desc, var_name="s", tol=1e-9):
+    deg = len(coeffs_desc) - 1
+    terms = []
+    for idx, c in enumerate(coeffs_desc):
+        power = deg - idx
+        val = complex(c)
+        re_val = 0.0 if abs(val.real) < tol else round(float(val.real), 6)
+        im_val = 0.0 if abs(val.imag) < tol else round(float(val.imag), 6)
+
+        if abs(re_val) < tol and abs(im_val) < tol:
+            continue
+
+        if abs(im_val) < tol:
+            coeff_str = f"{re_val}"
         else:
-            sinal = "+" if im > 0 else "-"
-            formatted.append(f"{re} {sinal} {abs(im)}j")
-    return formatted
+            sinal = "+" if im_val > 0 else "-"
+            coeff_str = f"({re_val} {sinal} {abs(im_val)}j)"
+
+        if power == 0:
+            term = coeff_str
+        elif power == 1:
+            term = f"{coeff_str}*{var_name}"
+        else:
+            term = f"{coeff_str}*{var_name}^{power}"
+
+        terms.append(term)
+
+    return " + ".join(terms).replace("+ -", "- ") if terms else "0.0"
+
+
+def _fmt(val, casas=4):
+    v = round(float(complex(val).real), casas)
+    if v == 0:
+        v = 0.0
+    txt = f"{v:.{casas}f}".rstrip("0").rstrip(".")
+    return txt if txt else "0"
+
+
+def _matriz_limpa(M):
+    return sp.Matrix(
+        [[sp.Symbol(_fmt(M[i, j])) for j in range(M.cols)] for i in range(M.rows)]
+    )
 
 
 def classify_stability_from_poles(poles, tol=1e-7):
-    """Classifica a estabilidade com base na parte real dos polos."""
     real_parts = np.real(poles)
     if np.any(real_parts > tol):
         return (
@@ -48,10 +93,13 @@ def realization_from_tf(num_coeffs, den_coeffs, form="controlavel"):
     form: 'controlavel' ou 'observavel'.
     """
     s = sp.Symbol("s")
-    num_poly = sp.Poly(sum(sp.nsimplify(c) * (s ** i) for i, c in enumerate(reversed(num_coeffs))), s)
-    den_poly = sp.Poly(sum(sp.nsimplify(c) * (s ** i) for i, c in enumerate(reversed(den_coeffs))), s)
+    num_poly = sp.Poly(
+        sum(sp.nsimplify(c) * (s ** i) for i, c in enumerate(reversed(num_coeffs))), s
+    )
+    den_poly = sp.Poly(
+        sum(sp.nsimplify(c) * (s ** i) for i, c in enumerate(reversed(den_coeffs))), s
+    )
 
-    # Normaliza pelo coeficiente do maior grau do denominador (s^n)
     a_n = sp.simplify(den_poly.LC())
     if a_n == 0:
         raise ValueError("Coeficiente do maior grau do denominador nao pode ser zero.")
@@ -60,23 +108,15 @@ def realization_from_tf(num_coeffs, den_coeffs, form="controlavel"):
     num_scaled = sp.Poly(sp.expand(num_poly.as_expr() / a_n), s)
 
     n = den_monic.degree()
-    if n < 1:
-        raise ValueError("A ordem do sistema (grau do denominador) deve ser >= 1.")
-    if num_scaled.degree() >= n:
-        raise ValueError(
-            "O grau do numerador deve ser menor que o grau do denominador (sistema estritamente proprio)."
-        )
+    if n < 1 or num_scaled.degree() >= n:
+        raise ValueError("Sistema deve ter ordem n >= 1 e ser estritamente proprio.")
 
-    # Coeficientes do denominador normalizado: s^n + alpha_n*s^(n-1) + ... + alpha_2*s + alpha_1
-    # Em ordem decrescente [1, alpha_n, alpha_{n-1}, ..., alpha_2, alpha_1]
     den_all = [sp.simplify(c) for c in den_monic.all_coeffs()]
-    alphas_desc = den_all[1:]  # [alpha_n, alpha_{n-1}, ..., alpha_1]
-    alphas_asc = list(reversed(alphas_desc))  # [alpha_1, alpha_2, ..., alpha_n]
+    alphas_asc = list(reversed(den_all[1:]))
 
-    # Coeficientes do numerador alinhados a n termos: beta_n*s^(n-1) + ... + beta_2*s + beta_1
     raw_num = [sp.simplify(c) for c in num_scaled.all_coeffs()]
-    betas_desc = [sp.Integer(0)] * (n - len(raw_num)) + raw_num  # [beta_n, ..., beta_2, beta_1]
-    betas_asc = list(reversed(betas_desc))  # [beta_1, beta_2, ..., beta_n]
+    betas_desc = [sp.Integer(0)] * (n - len(raw_num)) + raw_num
+    betas_asc = list(reversed(betas_desc))
 
     if form == "controlavel":
         A_rows = []
@@ -91,14 +131,12 @@ def realization_from_tf(num_coeffs, den_coeffs, form="controlavel"):
         form_title = "Forma Canonica Controlavel"
     elif form == "observavel":
         A_rows = []
-        for r in range(n - 1):
+        for r in range(n):
             row = [sp.Integer(0)] * n
-            row[r] = sp.Integer(1)
+            if r > 0:
+                row[r - 1] = sp.Integer(1)
             row[-1] = -alphas_asc[r]
             A_rows.append(row)
-        last_row = [sp.Integer(0)] * n
-        last_row[-1] = -alphas_asc[-1]
-        A_rows.append(last_row)
         A_sym = sp.Matrix(A_rows)
         B_sym = sp.Matrix([[b] for b in betas_asc])
         C_sym = sp.Matrix([[0] * (n - 1) + [1]])
@@ -149,9 +187,9 @@ def ackermann_gain_explicit(
 
     print(f"\n--- 1. Polinomio desejado {label_poly}(s) ---")
     print("Produto dos fatores (s - p_i):")
-    print(" ", to_caret(produto_fatores))
-    print(f"\nPolinomio expandido {label_poly}(s):")
-    print(" ", to_caret(delta_poly))
+    print(" ", to_caret(produto_fatores).replace("I", "j"))
+    print(f"\nPolinomio expandido {label_poly}(s) (em decimais):")
+    print(" ", format_poly_decimal_str(coeffs_desc, var_name="s"))
 
     print("\n--- 2. Calculo explicito das potencias de A ---")
     potencias_A = {}
@@ -224,15 +262,133 @@ def ackermann_gain_explicit(
         return L_sym
 
 
+def tracker_reference_explicit(A_sym, B_sym, C_sym, desired_poles):
+    """
+    Seguidor de referencia para entrada degrau (estado aumentado [e; x], e' = y - r):
+      A_a = [0  C]     B_a = [0]
+            [0  A]           [B]
+    Ackermann: K = -[0 ... 1] * U^(-1) * q_c(A_a) = [k1 | K2]
+    Malha fechada (A_a + B_a K) e reescrita na ordem [x; e], como no livro.
+    """
+    n = A_sym.rows
+    n_aug = n + 1
+
+    # ---------- sistema aumentado ----------
+    first_row_Aa = sp.Matrix.hstack(sp.zeros(1, 1), C_sym)      # [0, C]
+    lower_rows_Aa = sp.Matrix.hstack(sp.zeros(n, 1), A_sym)     # [0, A]
+    A_aug = sp.simplify(sp.Matrix.vstack(first_row_Aa, lower_rows_Aa))
+    B_aug = sp.simplify(sp.Matrix.vstack(sp.zeros(1, 1), B_sym))  # [0; B]
+    I_aug = sp.eye(n_aug)
+
+    print("Sistema aumentado (estado [e; x], com e' = y - r):")
+    print("Matriz aumentada A_a:")
+    sp.pprint(A_aug)
+    print("\nMatriz aumentada B_a:")
+    sp.pprint(B_aug)
+
+    # ---------- 1. controlabilidade aumentada ----------
+    cols = [(A_aug ** k) * B_aug for k in range(n_aug)]
+    U_aug = sp.simplify(sp.Matrix.hstack(*cols))
+    rank_aug = int(U_aug.rank())
+
+    print("\n--- 1. Matriz de controlabilidade aumentada U = [B_a  A_a*B_a  ...] ---")
+    sp.pprint(U_aug)
+    print(f"\nOrdem do sistema aumentado: n_a = {n_aug}")
+    print(f"Posto da matriz de controlabilidade: posto(U) = {rank_aug}")
+    if rank_aug == n_aug:
+        print("Conclusao: O sistema aumentado eh controlavel, logo o rastreamento "
+              "da referencia degrau eh possivel.")
+    else:
+        print("Conclusao: posto(U) < n_a -> sistema aumentado nao eh controlavel "
+              "(provavel zero de G(s) em s = 0). Seguidor impossivel.")
+        return
+
+    # ---------- 2. inversa ----------
+    print("\n--- 2. Inversa da matriz de controlabilidade U^(-1) ---")
+    U_inv = sp.simplify(U_aug.inv())
+    sp.pprint(U_inv)
+
+    # ---------- 3. polinomio desejado ----------
+    poles_complex = [complex(p) for p in desired_poles]
+    fatores_str = []
+    delta_poly_num = np.poly1d([1.0 + 0.0j])
+    for p in poles_complex:
+        re_p = 0.0 if abs(p.real) < 1e-12 else round(float(p.real), 6)
+        im_p = 0.0 if abs(p.imag) < 1e-12 else round(float(p.imag), 6)
+        p_clean = complex(re_p, im_p)
+        fatores_str.append(f"(s - {format_number_clean(p_clean)})")
+        delta_poly_num = delta_poly_num * np.poly1d([1.0 + 0.0j, -p_clean])
+
+    coeffs_desc = list(delta_poly_num.coeffs)
+    print("\n--- 3. Polinomio desejado delta(s) ---")
+    print("Produto dos fatores (s - p_i):")
+    print(" ", " * ".join(fatores_str))
+    print("\nPolinomio expandido delta(s) (em decimais):")
+    print(" ", format_poly_decimal_str(coeffs_desc, var_name="s"))
+
+    # ---------- 4. q_c(A_a) ----------
+    potencias = {k: sp.simplify(A_aug ** k) for k in range(1, n_aug + 1)}
+    Q_mat = sp.zeros(n_aug, n_aug)
+    for idx, c in enumerate(coeffs_desc):
+        grau = n_aug - idx
+        c_num = complex(c)
+        c_sym = sp.Float(round(float(c_num.real), 8)) if abs(c_num.imag) < 1e-12 else sp.nsimplify(c_num)
+        termo = sp.simplify(c_sym * (potencias[grau] if grau >= 1 else I_aug))
+        Q_mat = sp.simplify(Q_mat + termo)
+
+    print("\n--- 4. Matriz q_c(A_a) ---")
+    sp.pprint(_matriz_limpa(Q_mat))
+
+    # ---------- 5. Ackermann ----------
+    print("\n--- 5. Formula de Ackermann: K = -[0 ... 0 1] * U^(-1) * q_c(A_a) ---")
+    e_last = sp.Matrix([[0] * (n_aug - 1) + [1]])
+    K_aug = sp.simplify(-(e_last * U_inv * Q_mat))
+
+    k_int = float(sp.N(K_aug[0, 0]))
+    K_x = [float(sp.N(K_aug[0, j])) for j in range(1, n_aug)]
+
+    nomes_k2 = "  ".join(f"k2{j + 1}" for j in range(n))
+    vals_k2 = "  ".join(_fmt(v) for v in K_x)
+    print(f"\nK = [k1 | K2] = [k1 | {nomes_k2}] = [ {_fmt(k_int)} | {vals_k2} ]")
+
+    # ---------- 6. equacoes de estado em malha fechada, ordem [x; e] ----------
+    A_np = np.array(A_sym.tolist(), dtype=float)
+    B_np = np.array(B_sym.tolist(), dtype=float).reshape(-1, 1)
+    C_np = np.array(C_sym.tolist(), dtype=float).reshape(1, -1)
+    K2_np = np.array(K_x, dtype=float).reshape(1, -1)
+
+    A_cl = np.block([
+        [A_np + B_np @ K2_np, B_np * k_int],
+        [C_np,                np.zeros((1, 1))],
+    ])
+    B_r = np.vstack([np.zeros((n, 1)), -np.ones((1, 1))])
+
+    estados = ", ".join([f"x{i + 1}" for i in range(n)] + ["e"])
+    print(f"\n--- 6. Equacoes de estado em malha fechada (estado [{estados}]^T) ---")
+    print("d/dt [x; e] = (A + B*K2) x + B*k1*e   ;   e' = C*x - r")
+    print("\nMatriz de malha fechada:")
+    sp.pprint(_matriz_limpa(sp.Matrix(A_cl.tolist())))
+    print("\nMatriz de entrada (referencia r):")
+    sp.pprint(_matriz_limpa(sp.Matrix(B_r.tolist())))
+
+    # ---------- verificacao ----------
+    polos_mf = np.linalg.eigvals(A_cl)
+    print("\nVerificacao - autovalores de malha fechada:")
+    for idx, p_str in enumerate(format_poles(polos_mf), start=1):
+        print(f"  lambda_{idx} = {p_str}")
+
+
 def full_control_analysis_explicit(
     A,
     B,
     C_out,
     poles_k=None,
     poles_l=None,
+    poles_ref=None,
     calc_initial=True,
-    calc_k=True,
-    calc_l=True,
+    calc_k=False,
+    calc_l=False,
+    calc_ref=False,
     use_plus_bk=True,
     use_minus_lc=True,
     show_header=True,
@@ -269,13 +425,17 @@ def full_control_analysis_explicit(
         print("\nMatriz C:")
         sp.pprint(C_sym)
         if calc_k and poles_k is not None:
-            print("\nPolos desejados para o Projeto de Realimentacao de Estados (Realimentacao K):")
+            print("\nPolos desejados para Realimentacao de Estados (K):")
             for idx, p in enumerate(poles_k, start=1):
-                print(f"  p_c_{idx} = {p}")
+                print(f"  p_c_{idx} = {format_number_clean(p)}")
         if calc_l and poles_l is not None:
-            print("\nPolos desejados para Projeto de Observador de Estados (Ganho L):")
+            print("\nPolos desejados para Observador de Estados (L):")
             for idx, p in enumerate(poles_l, start=1):
-                print(f"  p_l_{idx} = {p}")
+                print(f"  p_l_{idx} = {format_number_clean(p)}")
+        if calc_ref and poles_ref is not None:
+            print("\nPolos desejados para Seguidor de Referencia:")
+            for idx, p in enumerate(poles_ref, start=1):
+                print(f"  p_r_{idx} = {format_number_clean(p)}")
         print("=" * 75)
 
     ctrl_cols = []
@@ -393,34 +553,20 @@ def full_control_analysis_explicit(
         else:
             print("Calculo de L cancelado: o sistema nao eh observavel.")
 
+    if calc_ref:
+        print("\n6. SEGUIDOR DE REFERENCIA (ENTRADA DEGRAU)")
+        print("-" * 75)
+        tracker_reference_explicit(A_sym, B_sym, C_sym, poles_ref)
+
 
 def sanitize_for_pdf(text):
-    """Substitui caracteres especiais de desenho de caixa por equivalentes ASCII."""
     replacements = {
-        "\u2500": "-",
-        "\u2502": "|",
-        "\u250c": "+",
-        "\u2510": "+",
-        "\u2514": "+",
-        "\u2518": "+",
-        "\u251c": "+",
-        "\u2524": "+",
-        "\u252c": "+",
-        "\u2534": "+",
-        "\u253c": "+",
-        "\u23a1": "[",
-        "\u23a2": "|",
-        "\u23a3": "[",
-        "\u23a4": "]",
-        "\u23a5": "|",
-        "\u23a6": "]",
-        "\u239b": "(",
-        "\u239c": "|",
-        "\u239d": "(",
-        "\u239e": ")",
-        "\u239f": "|",
-        "\u23a0": ")",
-        "\u00b7": "*",
+        "\u2500": "-", "\u2502": "|", "\u250c": "+", "\u2510": "+",
+        "\u2514": "+", "\u2518": "+", "\u251c": "+", "\u2524": "+",
+        "\u252c": "+", "\u2534": "+", "\u253c": "+", "\u23a1": "[",
+        "\u23a2": "|", "\u23a3": "[", "\u23a4": "]", "\u23a5": "|",
+        "\u23a6": "]", "\u239b": "(", "\u239c": "|", "\u239d": "(",
+        "\u239e": ")", "\u239f": "|", "\u23a0": ")", "\u00b7": "*",
         "\u2212": "-",
     }
     for k, v in replacements.items():
@@ -428,34 +574,42 @@ def sanitize_for_pdf(text):
     return text.encode("latin-1", errors="replace").decode("latin-1")
 
 
-def export_text_to_pdf(text, filename="lista_3_1_controle.pdf"):
+def export_text_to_pdf(text, filename="lista_controle.pdf"):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     full_path = os.path.join(base_dir, filename)
 
+    linhas = sanitize_for_pdf(text).splitlines()
+    margem = 10.0
+    largura_util = 210.0 - 2 * margem
+    max_chars = max((len(l) for l in linhas), default=1)
+    # Courier: largura do caractere = 0.6 * tamanho da fonte (pt) * 0.3528 mm
+    fonte = min(8.0, largura_util / (max_chars * 0.6 * 0.3528))
+    fonte = max(fonte, 4.0)
+
     pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(margem, 12, margem)
     pdf.set_auto_page_break(auto=True, margin=12)
     pdf.add_page()
-    pdf.set_font("Courier", size=8.5)
+    pdf.set_font("Courier", size=fonte)
 
-    clean_text = sanitize_for_pdf(text)
-    line_height = 4.2
-
-    for line in clean_text.splitlines():
-        pdf.cell(0, line_height, text=line, new_x="LMARGIN", new_y="NEXT")
+    altura_linha = max(fonte * 0.5, 2.2)
+    for line in linhas:
+        pdf.cell(0, altura_linha, text=line, new_x="LMARGIN", new_y="NEXT")
 
     pdf.output(full_path)
     return full_path
 
 
 def parse_number_list(raw_text, expected_len=None):
-    """Converte string com numeros (separados por espaco ou virgula) em lista."""
     tokens = [tok.strip() for tok in raw_text.replace(",", " ").split() if tok.strip()]
     if expected_len is not None and len(tokens) != expected_len:
         raise ValueError(f"Esperados {expected_len} valores, mas recebi {len(tokens)}.")
     values = []
     for tok in tokens:
         expr_str = tok.replace("i", "j")
-        val = complex(sp.N(sp.sympify(expr_str)))
+        expr_str = re.sub(r"(?<![0-9a-zA-Z_.])j", "1*j", expr_str)
+        # CORRIGIDO: 'j' passa a ser a unidade imaginaria no sympy
+        val = complex(sp.N(sp.sympify(expr_str, locals={"j": sp.I})))
         if abs(val.imag) < 1e-12:
             values.append(float(val.real))
         else:
@@ -463,22 +617,33 @@ def parse_number_list(raw_text, expected_len=None):
     return values
 
 
+def poles_are_conjugate_closed(poles, tol=1e-9):
+    """True se todo polo complexo tem seu conjugado na lista (K/L reais)."""
+    restantes = [complex(p) for p in poles]
+    while restantes:
+        p = restantes.pop(0)
+        if abs(p.imag) < tol:
+            continue
+        conj = p.conjugate()
+        achou = None
+        for idx, q in enumerate(restantes):
+            if abs(q - conj) < 1e-7:
+                achou = idx
+                break
+        if achou is None:
+            return False
+        restantes.pop(achou)
+    return True
+
+
 def prompt_matrix_A(n):
     print(f"\nDigite a matriz A ({n}x{n}), uma linha por vez (elementos separados por espaco ou virgula):")
-    A = []
-    for i in range(n):
-        row = parse_number_list(input(f"  Linha {i + 1}: "), expected_len=n)
-        A.append(row)
-    return A
+    return [parse_number_list(input(f"  Linha {i + 1}: "), expected_len=n) for i in range(n)]
 
 
 def prompt_vector_B(n):
     print(f"\nDigite a matriz/vetor B ({n} linhas, 1 coluna):")
-    B = []
-    for i in range(n):
-        val = parse_number_list(input(f"  B[{i + 1}]: "), expected_len=1)[0]
-        B.append(val)
-    return B
+    return [parse_number_list(input(f"  B[{i + 1}]: "), expected_len=1)[0] for i in range(n)]
 
 
 def prompt_vector_C(n):
@@ -486,27 +651,39 @@ def prompt_vector_C(n):
     return parse_number_list(raw, expected_len=n)
 
 
-def prompt_poles(n, label):
-    raw = input(f"Digite os {n} polos desejados para {label} (ex.: -2+1j -2-1j -10): ")
-    return parse_number_list(raw, expected_len=n)
+def prompt_poles(count, label):
+    print(f"\nFormato para digitar os {count} polos de {label}:")
+    print("  - Separe cada polo por espaco ou virgula (ex.: -1+0.1j -1-0.1j -5 -12)")
+    print("  - Numeros complexos: use j ou i, com ou sem * (ex.: -1+1j, -1+1*j, -1+0.1i, -1+j)")
+    print("  - Reais, decimais e fracoes tambem sao aceitos (ex.: -10, -2.5, -1/2)")
+    print("  - Polos complexos devem vir em pares conjugados")
+    while True:
+        raw = input(f"Digite os {count} polos desejados: ")
+        try:
+            poles = parse_number_list(raw, expected_len=count)
+        except Exception as exc:
+            print(f"Entrada invalida ({exc}). Tente novamente.")
+            continue
+        if not poles_are_conjugate_closed(poles):
+            print("Os polos complexos precisam estar em pares conjugados. Tente novamente.")
+            continue
+        return poles
 
 
 def parse_options(raw_opts):
-    """Interpreta uma ou mais opcoes como '1, 2', '1 2', '2, 3' ou '4'."""
+    """Interpreta uma ou mais opcoes como '1, 4', '2, 3', '4' ou '5' (tudo)."""
     tokens = [t.strip() for t in raw_opts.replace(",", " ").split() if t.strip()]
-    if not tokens:
-        return {"1", "2", "3"}
-    if "4" in tokens:
-        return {"1", "2", "3"}
-    valid = {t for t in tokens if t in {"1", "2", "3"}}
-    return valid if valid else {"1", "2", "3"}
+    if not tokens or "5" in tokens:
+        return {"1", "2", "3", "4"}
+    valid = {t for t in tokens if t in {"1", "2", "3", "4"}}
+    return valid if valid else {"1"}
 
 
 def run_interactive():
-    print("=== ANALISE DE SISTEMAS DE CONTROLE (ESPACO DE ESTADOS) ===")
+    print("=== ANALISE E PROJETO DE SISTEMAS DE CONTROLE (ESPACO DE ESTADOS) ===")
     print("\nComo voce deseja informar o sistema?")
     print("  [1] Digitar as matrizes A, B e C diretamente")
-    print("  [2] Informar uma funcao de transferencia G(s) e montar uma realizacao (A, B, C)")
+    print("  [2] Informar uma funcao de transferencia G(s) e escolher a realizacao canonica")
     modo_entrada = input("Escolha o modo de entrada [1/2] (padrao 1): ").strip() or "1"
 
     tf_info = None
@@ -516,12 +693,10 @@ def run_interactive():
         print("  Exemplo para G(s) = (3s^2 + 4s - 2) / (s^3 + 3s^2 + 7s + 5):")
         print("    Numerador:   3 4 -2")
         print("    Denominador: 1 3 7 5")
-        num_raw = input("Coeficientes do numerador: ")
-        den_raw = input("Coeficientes do denominador: ")
-        num_coeffs = parse_number_list(num_raw)
-        den_coeffs = parse_number_list(den_raw)
+        num_coeffs = parse_number_list(input("Coeficientes do numerador: "))
+        den_coeffs = parse_number_list(input("Coeficientes do denominador: "))
 
-        print("\nQual realizacao canonica voce deseja usar?")
+        print("\nEscolha a realizacao:")
         print("  [1] Forma Canonica Controlavel")
         print("  [2] Forma Canonica Observavel")
         forma_opt = input("Escolha [1/2] (padrao 1): ").strip() or "1"
@@ -540,9 +715,7 @@ def run_interactive():
         B = prompt_vector_B(n)
         C = prompt_vector_C(n)
 
-    pdf_name = input("\nNome do arquivo PDF (Enter para 'lista_3_1_controle.pdf'): ").strip()
-    if not pdf_name:
-        pdf_name = "lista_3_1_controle.pdf"
+    pdf_name = input("\nNome do arquivo PDF (Enter para 'lista_controle.pdf'): ").strip() or "lista_controle.pdf"
     if not pdf_name.lower().endswith(".pdf"):
         pdf_name += ".pdf"
 
@@ -550,20 +723,23 @@ def run_interactive():
     primeira_execucao = True
 
     while True:
-        print("\nO que voce deseja calcular? (Voce pode digitar UMA ou VARIAS opcoes, ex.: 1, 2)")
-        print("  [1] Analise inicial (polinomio, estabilidade, controlabilidade e observabilidade)")
+        print("\nO que voce deseja calcular? (Voce pode digitar UMA ou VARIAS opcoes, ex.: 1, 4)")
+        print("  [1] Analise inicial (polinomio caracteristico, estabilidade, controlabilidade e observabilidade)")
         print("  [2] Realimentacao de estados (K)")
         print("  [3] Observador de estados (L)")
-        print("  [4] Todas as anteriores (1 + 2 + 3)")
-        raw_opts = input("Digite a(s) opcao(oes) desejada(s) [ex.: 1, 2 ou 2, 3 ou 4]: ").strip()
+        print("  [4] Seguidor de referencia (entrada degrau)")
+        print("  [5] Todas as anteriores (1 + 2 + 3 + 4)")
+        raw_opts = input("Digite a(s) opcao(oes) desejada(s): ").strip()
         escolhas = parse_options(raw_opts)
 
         calc_initial = "1" in escolhas
         calc_k = "2" in escolhas
         calc_l = "3" in escolhas
+        calc_ref = "4" in escolhas
 
-        poles_k = prompt_poles(n, "o controlador (K)") if calc_k else None
-        poles_l = prompt_poles(n, "o observador (L)") if calc_l else None
+        poles_k = prompt_poles(n, "a realimentacao de estados (K)") if calc_k else None
+        poles_l = prompt_poles(n, "o observador de estados (L)") if calc_l else None
+        poles_ref = prompt_poles(n + 1, f"o seguidor de referencia (ordem {n + 1})") if calc_ref else None
 
         with redirect_stdout(buffer):
             full_control_analysis_explicit(
@@ -572,9 +748,11 @@ def run_interactive():
                 C_out=C,
                 poles_k=poles_k,
                 poles_l=poles_l,
+                poles_ref=poles_ref,
                 calc_initial=calc_initial,
                 calc_k=calc_k,
                 calc_l=calc_l,
+                calc_ref=calc_ref,
                 use_plus_bk=True,
                 use_minus_lc=True,
                 show_header=primeira_execucao,
