@@ -42,6 +42,81 @@ def classify_stability_from_poles(poles, tol=1e-7):
         )
 
 
+def realization_from_tf(num_coeffs, den_coeffs, form="controlavel"):
+    """
+    Constroi A, B e C a partir de G(s) = N(s)/D(s) em ordem decrescente de s.
+    form: 'controlavel' ou 'observavel'.
+    """
+    s = sp.Symbol("s")
+    num_poly = sp.Poly(sum(sp.nsimplify(c) * (s ** i) for i, c in enumerate(reversed(num_coeffs))), s)
+    den_poly = sp.Poly(sum(sp.nsimplify(c) * (s ** i) for i, c in enumerate(reversed(den_coeffs))), s)
+
+    # Normaliza pelo coeficiente do maior grau do denominador (s^n)
+    a_n = sp.simplify(den_poly.LC())
+    if a_n == 0:
+        raise ValueError("Coeficiente do maior grau do denominador nao pode ser zero.")
+
+    den_monic = sp.Poly(sp.expand(den_poly.as_expr() / a_n), s)
+    num_scaled = sp.Poly(sp.expand(num_poly.as_expr() / a_n), s)
+
+    n = den_monic.degree()
+    if n < 1:
+        raise ValueError("A ordem do sistema (grau do denominador) deve ser >= 1.")
+    if num_scaled.degree() >= n:
+        raise ValueError(
+            "O grau do numerador deve ser menor que o grau do denominador (sistema estritamente proprio)."
+        )
+
+    # Coeficientes do denominador normalizado: s^n + alpha_n*s^(n-1) + ... + alpha_2*s + alpha_1
+    # Em ordem decrescente [1, alpha_n, alpha_{n-1}, ..., alpha_2, alpha_1]
+    den_all = [sp.simplify(c) for c in den_monic.all_coeffs()]
+    alphas_desc = den_all[1:]  # [alpha_n, alpha_{n-1}, ..., alpha_1]
+    alphas_asc = list(reversed(alphas_desc))  # [alpha_1, alpha_2, ..., alpha_n]
+
+    # Coeficientes do numerador alinhados a n termos: beta_n*s^(n-1) + ... + beta_2*s + beta_1
+    raw_num = [sp.simplify(c) for c in num_scaled.all_coeffs()]
+    betas_desc = [sp.Integer(0)] * (n - len(raw_num)) + raw_num  # [beta_n, ..., beta_2, beta_1]
+    betas_asc = list(reversed(betas_desc))  # [beta_1, beta_2, ..., beta_n]
+
+    if form == "controlavel":
+        A_rows = []
+        for r in range(n - 1):
+            row = [sp.Integer(0)] * n
+            row[r + 1] = sp.Integer(1)
+            A_rows.append(row)
+        A_rows.append([-a for a in alphas_asc])
+        A_sym = sp.Matrix(A_rows)
+        B_sym = sp.Matrix([[0] * (n - 1) + [1]]).T
+        C_sym = sp.Matrix([betas_asc])
+        form_title = "Forma Canonica Controlavel"
+    elif form == "observavel":
+        A_rows = []
+        for r in range(n - 1):
+            row = [sp.Integer(0)] * n
+            row[r] = sp.Integer(1)
+            row[-1] = -alphas_asc[r]
+            A_rows.append(row)
+        last_row = [sp.Integer(0)] * n
+        last_row[-1] = -alphas_asc[-1]
+        A_rows.append(last_row)
+        A_sym = sp.Matrix(A_rows)
+        B_sym = sp.Matrix([[b] for b in betas_asc])
+        C_sym = sp.Matrix([[0] * (n - 1) + [1]])
+        form_title = "Forma Canonica Observavel"
+    else:
+        raise ValueError("Forma invalida. Use 'controlavel' ou 'observavel'.")
+
+    info = {
+        "n": n,
+        "form_title": form_title,
+        "num_expr": num_scaled.as_expr(),
+        "den_expr": den_monic.as_expr(),
+        "alphas_asc": alphas_asc,
+        "betas_asc": betas_asc,
+    }
+    return A_sym, B_sym, C_sym, info
+
+
 def ackermann_gain_explicit(
     A_sym,
     B_sym,
@@ -161,6 +236,7 @@ def full_control_analysis_explicit(
     use_plus_bk=True,
     use_minus_lc=True,
     show_header=True,
+    tf_info=None,
 ):
     A_np = np.array(A, dtype=float)
     B_np = np.array(B, dtype=float).reshape(-1, 1)
@@ -177,6 +253,15 @@ def full_control_analysis_explicit(
         print("=" * 75)
         print("DADOS DO SISTEMA FORNECIDOS NA ENTRADA")
         print("=" * 75)
+        if tf_info is not None:
+            print("Funcao de transferencia G(s):")
+            print(f"  Num(s) = {to_caret(tf_info['num_expr'])}")
+            print(f"  Den(s) = {to_caret(tf_info['den_expr'])}")
+            print(f"Realizacao escolhida: {tf_info['form_title']} (ordem n = {n})")
+            alphas_str = ", ".join(f"alpha_{i+1} = {val}" for i, val in enumerate(tf_info["alphas_asc"]))
+            betas_str = ", ".join(f"beta_{i+1} = {val}" for i, val in enumerate(tf_info["betas_asc"]))
+            print(f"Coeficientes do denominador: {alphas_str}")
+            print(f"Coeficientes do numerador:   {betas_str}\n")
         print("Matriz A:")
         sp.pprint(A_sym)
         print("\nMatriz B:")
@@ -419,13 +504,41 @@ def parse_options(raw_opts):
 
 def run_interactive():
     print("=== ANALISE DE SISTEMAS DE CONTROLE (ESPACO DE ESTADOS) ===")
-    n = int(input("Ordem do sistema n (ex.: 2, 3): ").strip())
-    if n < 1:
-        raise ValueError("A ordem do sistema deve ser >= 1.")
+    print("\nComo voce deseja informar o sistema?")
+    print("  [1] Digitar as matrizes A, B e C diretamente")
+    print("  [2] Informar uma funcao de transferencia G(s) e montar uma realizacao (A, B, C)")
+    modo_entrada = input("Escolha o modo de entrada [1/2] (padrao 1): ").strip() or "1"
 
-    A = prompt_matrix_A(n)
-    B = prompt_vector_B(n)
-    C = prompt_vector_C(n)
+    tf_info = None
+
+    if modo_entrada == "2":
+        print("\nDigite os coeficientes em ordem decrescente de s (separados por espaco ou virgula):")
+        print("  Exemplo para G(s) = (3s^2 + 4s - 2) / (s^3 + 3s^2 + 7s + 5):")
+        print("    Numerador:   3 4 -2")
+        print("    Denominador: 1 3 7 5")
+        num_raw = input("Coeficientes do numerador: ")
+        den_raw = input("Coeficientes do denominador: ")
+        num_coeffs = parse_number_list(num_raw)
+        den_coeffs = parse_number_list(den_raw)
+
+        print("\nQual realizacao canonica voce deseja usar?")
+        print("  [1] Forma Canonica Controlavel")
+        print("  [2] Forma Canonica Observavel")
+        forma_opt = input("Escolha [1/2] (padrao 1): ").strip() or "1"
+        forma = "observavel" if forma_opt == "2" else "controlavel"
+
+        A_sym, B_sym, C_sym, tf_info = realization_from_tf(num_coeffs, den_coeffs, form=forma)
+        n = tf_info["n"]
+        A = A_sym.tolist()
+        B = [val[0] for val in B_sym.tolist()]
+        C = C_sym.tolist()[0]
+    else:
+        n = int(input("\nOrdem do sistema n (ex.: 2, 3): ").strip())
+        if n < 1:
+            raise ValueError("A ordem do sistema deve ser >= 1.")
+        A = prompt_matrix_A(n)
+        B = prompt_vector_B(n)
+        C = prompt_vector_C(n)
 
     pdf_name = input("\nNome do arquivo PDF (Enter para 'lista_3_1_controle.pdf'): ").strip()
     if not pdf_name:
@@ -465,6 +578,7 @@ def run_interactive():
                 use_plus_bk=True,
                 use_minus_lc=True,
                 show_header=primeira_execucao,
+                tf_info=tf_info,
             )
 
         primeira_execucao = False
