@@ -378,6 +378,6 @@ if __name__ == "__main__":
     saida_completa = buffer.getvalue()
     print(saida_completa)
 
-    arquivo_pdf = "relatorio_controle.pdf"
+    arquivo_pdf = "lista_3_1_controle.pdf"
     export_text_to_pdf(saida_completa, filename=arquivo_pdf)
     print(f"\nPDF gerado com sucesso: {arquivo_pdf}")
