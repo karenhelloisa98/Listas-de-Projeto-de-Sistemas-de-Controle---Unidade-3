@@ -1,6 +1,6 @@
 # Controle no Espaço de Estados (contínuo e discreto)
 
-Scripts interativos em Python (`numpy`, `sympy` e `fpdf2`) para análise e projeto por alocação de polos (fórmula de Ackermann), com resolução passo a passo e relatório em PDF.
+Scripts interativos em Python (`numpy`, `sympy` e `fpdf2`) para análise e projeto por alocação de polos (fórmula de Ackermann), com resolução passo a passo e relatório em PDF, um por questão.
 
 | Script | Sistema |
 |---|---|
@@ -13,7 +13,7 @@ Scripts interativos em Python (`numpy`, `sympy` e `fpdf2`) para análise e proje
 - Realimentação de estados $K$ e observador de estados $L$.
 - Seguidor de referência para entrada degrau.
 - **Só no discreto:** representação discreta (ZOH) de um sistema contínuo, com $T$ informado pelo usuário, mostrando a equação de estado $x(k+1) = Gx(k) + Hu(k)$.
-- Relatório completo em PDF, com cabeçalho (universidade, disciplina e aluno).
+- Relatório em PDF com cabeçalho (universidade, disciplina e aluno) e o número da questão em negrito.
 
 ## Instalação
 
@@ -29,6 +29,8 @@ Os nomes têm espaços, então use aspas:
 python "Listas de Controle U3 - Continuo.py"
 python "Listas de Controle U3 - Discreto.py"
 ```
+
+Rode o script uma vez por questão. O programa pergunta primeiro o **número da questão** (ex.: `1`, `3a`), que aparece em negrito no PDF. O nome padrão do arquivo é `questao_1.pdf`, `questao_3a.pdf` e assim por diante, então um PDF não sobrescreve o outro.
 
 **Entrada do sistema**
 
@@ -51,7 +53,7 @@ python "Listas de Controle U3 - Discreto.py"
 
 **Polos desejados:** $n$ para $K$ e $L$, e $n + 1$ para o seguidor. Aceitam reais, frações e complexos com `j` ou `i` (ex.: `-1+0.1j -1-0.1j -5`), e os complexos precisam vir em pares conjugados. No discreto, use $|z| < 1$ para estabilidade.
 
-Ao final, o programa pergunta se quer outra combinação. Tudo vai para o mesmo PDF, salvo na pasta do script.
+Ao final, o programa pergunta se quer outra combinação para a mesma questão. Tudo vai para o mesmo PDF, salvo na pasta do script.
 
 ## Convenções
 

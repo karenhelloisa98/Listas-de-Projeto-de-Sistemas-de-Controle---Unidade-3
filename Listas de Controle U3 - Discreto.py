@@ -813,7 +813,7 @@ def sanitize_for_pdf(text):
     return text.encode("latin-1", errors="replace").decode("latin-1")
 
 
-def export_text_to_pdf(text, filename="lista_controle_discreto.pdf"):
+def export_text_to_pdf(text, filename="lista_controle_discreto.pdf", questao=None):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     full_path = os.path.join(base_dir, filename)
 
@@ -829,6 +829,11 @@ def export_text_to_pdf(text, filename="lista_controle_discreto.pdf"):
     pdf.set_margins(margem, 12, margem)
     pdf.set_auto_page_break(auto=True, margin=12)
     pdf.add_page()
+    if questao:
+        titulo = f"Questão {questao}".encode("latin-1", errors="replace").decode("latin-1")
+        pdf.set_font("Helvetica", style="B", size=16)
+        pdf.cell(0, 9, text=titulo, new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
     pdf.set_font("Courier", size=fonte)
 
     altura_linha = max(fonte * 0.5, 2.2)
@@ -933,8 +938,17 @@ def parse_options(raw_opts):
     return valid if valid else {"2"}
 
 
+def prompt_question():
+    while True:
+        q = input("Numero da questao (ex.: 1, 2, 3a): ").strip()
+        if q:
+            return q
+        print("Digite o numero da questao.")
+
+
 def run_interactive():
     print("=== ANALISE E PROJETO DE SISTEMAS DE CONTROLE DISCRETOS (ESPACO DE ESTADOS) ===")
+    questao = prompt_question()
     print("Modelo: x(k+1) = G x(k) + H u(k) ; y(k) = C x(k)")
     print("\nComo voce deseja informar o sistema?")
     print("  [1] Digitar as matrizes G, H e C do sistema discreto")
@@ -992,7 +1006,8 @@ def run_interactive():
         H = prompt_vector_H(n)
         C = prompt_vector_C(n)
 
-    pdf_name = input("\nNome do arquivo PDF (Enter para 'lista_controle_discreto.pdf'): ").strip() or "lista_controle_discreto.pdf"
+    padrao = "questao_" + re.sub(r"[^0-9A-Za-z]+", "_", questao) + ".pdf"
+    pdf_name = input(f"\nNome do arquivo PDF (Enter para '{padrao}'): ").strip() or padrao
     if not pdf_name.lower().endswith(".pdf"):
         pdf_name += ".pdf"
 
@@ -1047,7 +1062,7 @@ def run_interactive():
     saida_completa = buffer.getvalue()
     print(saida_completa)
 
-    caminho_pdf = export_text_to_pdf(saida_completa, filename=pdf_name)
+    caminho_pdf = export_text_to_pdf(saida_completa, filename=pdf_name, questao=questao)
     print(f"\nPDF gerado com sucesso em: {caminho_pdf}")
 
 
