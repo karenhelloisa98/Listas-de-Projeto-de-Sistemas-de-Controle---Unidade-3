@@ -6,12 +6,35 @@ from fpdf import FPDF
 import numpy as np
 import sympy as sp
 
+# ---- Cabecalho do PDF (edite aqui se precisar) ----
+PDF_UNIVERSIDADE = "Universidade Federal do Rio Grande do Norte"
+PDF_DISCIPLINA = "Disciplina: Projeto de Sistemas de Controle"
+PDF_ALUNO = "Aluno: Karen Helloisa Araújo"
+
+
+class RelatorioPDF(FPDF):
+    """PDF com cabecalho (universidade, disciplina e aluno) em todas as paginas."""
+
+    def header(self):
+        familia, estilo, tamanho = self.font_family, self.font_style, self.font_size_pt
+        self.set_font("Helvetica", style="B", size=11)
+        self.cell(0, 5, text=PDF_UNIVERSIDADE, align="C", new_x="LMARGIN", new_y="NEXT")
+        self.set_font("Helvetica", style="", size=10)
+        self.cell(0, 5, text=PDF_DISCIPLINA, align="C", new_x="LMARGIN", new_y="NEXT")
+        self.cell(0, 5, text=PDF_ALUNO, align="C", new_x="LMARGIN", new_y="NEXT")
+        self.ln(1)
+        self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+        self.ln(3)
+        if familia:
+            self.set_font(familia, style=estilo, size=tamanho)
+
 
 def to_caret(expr):
     return str(expr).replace("**", "^")
 
 
 def format_number_clean(val, tol=1e-9):
+    """Formata numero real ou complexo em decimal usando 'j' (nunca 'I')."""
     c = complex(val)
     re_val = 0.0 if abs(c.real) < tol else round(float(c.real), 6)
     im_val = 0.0 if abs(c.imag) < tol else round(float(c.imag), 6)
@@ -26,6 +49,7 @@ def format_poles(poles, tol=1e-7):
 
 
 def format_poly_decimal_str(coeffs_desc, var_name="s", tol=1e-9):
+    """Monta string do polinomio expandido com coeficientes decimais e '^'."""
     deg = len(coeffs_desc) - 1
     terms = []
     for idx, c in enumerate(coeffs_desc):
@@ -56,6 +80,7 @@ def format_poly_decimal_str(coeffs_desc, var_name="s", tol=1e-9):
 
 
 def _fmt(val, casas=4):
+    """Numero real em decimal limpo (sem zeros sobrando, sem -0)."""
     v = round(float(complex(val).real), casas)
     if v == 0:
         v = 0.0
@@ -64,12 +89,14 @@ def _fmt(val, casas=4):
 
 
 def _matriz_limpa(M):
+    """Matriz sympy com os elementos formatados em decimal (so para imprimir)."""
     return sp.Matrix(
         [[sp.Symbol(_fmt(M[i, j])) for j in range(M.cols)] for i in range(M.rows)]
     )
 
 
 def classify_stability_from_poles(poles, tol=1e-7):
+    """Classifica a estabilidade com base na parte real dos polos."""
     real_parts = np.real(poles)
     if np.any(real_parts > tol):
         return (
@@ -130,6 +157,8 @@ def realization_from_tf(num_coeffs, den_coeffs, form="controlavel"):
         C_sym = sp.Matrix([betas_asc])
         form_title = "Forma Canonica Controlavel"
     elif form == "observavel":
+        # CORRIGIDO: A = transposta da companheira
+        #   linha r: 1 na posicao r-1 (se r > 0) e -alpha_r na ultima coluna
         A_rows = []
         for r in range(n):
             row = [sp.Integer(0)] * n
@@ -296,10 +325,10 @@ def tracker_reference_explicit(A_sym, B_sym, C_sym, desired_poles):
     print(f"\nOrdem do sistema aumentado: n_a = {n_aug}")
     print(f"Posto da matriz de controlabilidade: posto(U) = {rank_aug}")
     if rank_aug == n_aug:
-        print("Conclusao: O sistema aumentado eh controlavel, logo o rastreamento "
-              "da referencia degrau eh possivel.")
+        print("Conclusao: O sistema aumentado E controlavel, logo o rastreamento "
+              "da referencia degrau e possivel.")
     else:
-        print("Conclusao: posto(U) < n_a -> sistema aumentado nao eh controlavel "
+        print("Conclusao: posto(U) < n_a -> sistema aumentado NAO controlavel "
               "(provavel zero de G(s) em s = 0). Seguidor impossivel.")
         return
 
@@ -586,7 +615,7 @@ def export_text_to_pdf(text, filename="lista_controle.pdf"):
     fonte = min(8.0, largura_util / (max_chars * 0.6 * 0.3528))
     fonte = max(fonte, 4.0)
 
-    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf = RelatorioPDF(orientation="P", unit="mm", format="A4")
     pdf.set_margins(margem, 12, margem)
     pdf.set_auto_page_break(auto=True, margin=12)
     pdf.add_page()
